@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>テンプレートマッチング（画像にマッチ箇所表示）</title>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    pre { background: #f0f0f0; padding: 10px; white-space: pre-wrap; }
+    img { max-width: 100%; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>テンプレートマッチング（画像表示付き）</h1>
+
+  <label for="threshold">閾値 (0〜1):</label>
+  <input type="number" id="threshold" min="0" max="1" step="0.01" value="0.95"><br><br>
+
+  <label for="templateInput">テンプレート画像 (.png):</label>
+  <input type="file" id="templateInput" accept="image/png"><br><br>
+
+  <label for="imageInput">対象画像 (.png, .jpg, .jpeg):</label>
+  <input type="file" id="imageInput" accept="image/*"><br><br>
+
+  <button onclick="runMatching()">スタート</button>
+
+  <h2>結果ログ:</h2>
+  <pre id="output">ここにログが表示されます</pre>
+
+  <h2>マッチ結果画像:</h2>
+  <img id="resultImage" src="" alt="マッチ結果がここに表示されます">
+
+  <script>
+    let pyodide = null;
+
+    async function loadPyodideAndPackages() {
+      pyodide = await loadPyodide();
+      await pyodide.loadPackage(["opencv-python", "numpy"]);
+    }
+
+    loadPyodideAndPackages();
+
+    async function runMatching() {
+      const threshold = parseFloat(document.getElementById("threshold").value);
+      const templateInput = document.getElementById("templateInput");
+      const imageInput = document.getElementById("imageInput");
+      const outputEl = document.getElementById("output");
+      const imgEl = document.getElementById("resultImage");
+
+      if (templateInput.files.length === 0 || imageInput.files.length === 0) {
+        outputEl.textContent = "❗ テンプレート画像と対象画像を両方選択してください。";
+        imgEl.src = "";
+        return;
+      }
+
+      if (isNaN(threshold) || threshold < 0 || threshold > 1) {
+        outputEl.textContent = "❗ 閾値は 0〜1 の間で入力してください。";
+        imgEl.src = "";
+        return;
+      }
+
+      const templateName = "template.png"; // 固定
+      const imageFile = imageInput.files[0];
+      const imageExt = imageFile.name.split('.').pop().toLowerCase();
+      const imageName = "uploaded." + imageExt;
+
+      const templateBytes = new Uint8Array(await templateInput.files[0].arrayBuffer());
+      const imageBytes = new Uint8Array(await imageFile.arrayBuffer());
+      pyodide.FS.writeFile(templateName, templateBytes);
+      pyodide.FS.writeFile(imageName, imageBytes);
+
+      const pythonCode = `
+import cv2
+import numpy as np
+import base64
+
+log = []
+try:
+    log.append("🔹 template 読み込み中...")
+    template = cv2.imread("${templateName}", 0)
+    if template is None:
+        raise Exception("テンプレート画像の読み込みに失敗")
+
+    log.append("🔹 対象画像 読み込み中...")
+    img_color = cv2.imread("${imageName}")  # カラーで読み込む
+    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+
+    log.append("🔹 テンプレートマッチング実行中...")
+    res = cv2.matchTemplate(img_gray, template, cv2.TM_CCOEFF_NORMED)
+    log.append("🔹 閾値 ${threshold} 以上を抽出中...")
+    loc = np.where(res >= ${threshold})
+    result = list(zip(*loc[::-1]))
+
+    # 非最大抑制 (Non-Maximum Suppression) の処理
+    min_distance = 10  # 近くのマッチを無視する距離（ピクセル）
+    final_result = []
+
+    for pt in result:
+        add = True
+        for other_pt in final_result:
+            dist = np.linalg.norm(np.array(pt) - np.array(other_pt))  # 距離を計算
+            if dist < min_distance:  # 近すぎる場合は追加しない
+                add = False
+                break
+        if add:
+            final_result.append(pt)
+
+    # X座標の小さい順にソート
+    final_result_sorted = sorted(final_result, key=lambda x: x[0])
+
+    if final_result_sorted:
+        log.append("✅ マッチ箇所が見つかりました:")
+        if len(final_result_sorted) > 5:  # 5個以上のマッチがある場合、警告を追加
+            log.append("⚠️ マッチ箇所が多すぎます。閾値を調整するか、範囲を狭めてください。")
+        h, w = template.shape
+        for pt in final_result_sorted:
+            log.append(f"X: {pt[0]}, Y: {pt[1]}")
+            cv2.rectangle(img_color, pt, (pt[0] + w, pt[1] + h), (0, 0, 255), 2)
+            cv2.circle(img_color, (pt[0] + w // 2, pt[1] + h // 2), 10, (0, 255, 0), 2)
+    else:
+        log.append("⚠️ マッチなし")
+
+    # 結果画像を保存
+    cv2.imwrite("result.png", img_color)
+
+    # base64でエンコードしてJavaScriptに返す
+    with open("result.png", "rb") as f:
+        img_bytes = f.read()
+    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+except Exception as e:
+    log.append("❌ エラー: " + str(e))
+    img_base64 = ""
+
+"\\n".join(log) + "\\n__SPLIT__\\n" + img_base64
+`;
+
+      try {
+        const result = await pyodide.runPythonAsync(pythonCode);
+        const [logText, imgBase64] = result.split("__SPLIT__");
+        outputEl.textContent = logText;
+        if (imgBase64) {
+          imgEl.src = "data:image/png;base64," + imgBase64;
+        } else {
+          imgEl.src = "";
+        }
+      } catch (err) {
+        outputEl.textContent = "❌ Pyodide 実行エラー:\n" + err;
+        imgEl.src = "";
+        console.error(err);
+      }
+    }
+  </script>
+</body>
+</html>
