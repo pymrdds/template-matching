@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>まそおワールド</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        canvas, img {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ccc;
+        }
+        #result, #initialResult {
+            margin-top: 20px;
+            font-size: 18px;
+            white-space: pre-wrap;
+            text-align: left;
+            display: inline-block;
+        }
+        .button-container {
+            margin: 10px 0;
+        }
+        button {
+            padding: 5px 10px;
+            margin: 5px;
+        }
+        input[type="number"] {
+            width: 80px;
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>初期位置検索ツール Ver1.0</h1>
+
+    <div>
+        <label for="imageUpload">画像をアップロード:</label><br>
+        <input type="file" id="imageUpload" accept="image/*" onchange="loadImage(event)">
+    </div>
+
+    <div>
+        <label for="threshold">整合率 (0-1):</label><br>
+        <input type="number" id="threshold" step="0.001" min="0" max="1" value="0.96">
+    </div>
+
+    <div class="button-container">
+        <button onclick="initialPositionCheck()">初期位置チェック</button>
+    </div>
+
+    <div id="initialResult">ここに初期位置が表示されます</div>
+    <canvas id="canvas"></canvas>
+    <img id="resultImage" src="" alt="マッチ結果がここに表示されます" style="margin-top: 20px;">
+
+    <script>
+        let pyodide = null;
+        let pyodideReady = false;
+        let uploadedImage = null;
+        let templateBytes = null;
+        let csvData = {};
+
+        const templateBase64 = "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAwCAIAAACuWtxbAAAACXBIWXMAAAsTAAALEwEAmpwYAAADcElEQVRIiX..."; // 中略
+
+        async function loadPyodideAndPackages() {
+            pyodide = await loadPyodide();
+            await pyodide.loadPackage(["opencv-python", "numpy"]);
+            pyodideReady = true;
+            templateBytes = Uint8Array.from(atob(templateBase64), c => c.charCodeAt(0));
+        }
+
+        async function fetchCSV() {
+            const csvUrl = "https://raw.githubusercontent.com/Gorzmonst/monst25/main/initial-position_database_iphone16.csv";
+            try {
+                const response = await fetch(csvUrl);
+                const csvText = await response.text();
+                parseCSV(csvText);
+            } catch {
+                csvData = {
+                    '239,1670': { initial_position: '1', string_to_show: 'A-1' },
+                    // 省略: デフォルトデータ
+                };
+            }
+        }
+
+        function parseCSV(csvText) {
+            const lines = csvText.trim().split('\n');
+            for (let i = 1; i < lines.length; i++) {
+                const [x, y, initial_position, string_to_show] = lines[i].split(',').map(s => s.trim());
+                csvData[`${x},${y}`] = { initial_position, string_to_show };
+            }
+        }
+
+        window.onload = async () => {
+            await loadPyodideAndPackages();
+            await fetchCSV();
+        };
+
+        function loadImage(event) {
+            const file = event.target.files[0];
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.src = e.target.result;
+                img.onload = function() {
+                    uploadedImage = img;
+                    const canvas = document.getElementById('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                };
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function initialPositionCheck() {
+            const threshold = parseFloat(document.getElementById("threshold").value);
+            const imageInput = document.getElementById("imageUpload");
+            if (!imageInput.files[0]) return alert("画像をアップロードしてください。");
+
+            const imageFile = imageInput.files[0];
+            const imageName = "uploaded." + imageFile.name.split('.').pop().toLowerCase();
+            const imageBytes = new Uint8Array(await imageFile.arrayBuffer());
+
+            pyodide.FS.writeFile('template.png', templateBytes);
+            pyodide.FS.writeFile(imageName, imageBytes);
+
+            const code = `
+import cv2
+import numpy as np
+image = cv2.imread("${imageName}")
+template = cv2.imread("template.png")
+res = cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED)
+min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+if max_val >= ${threshold}:
+    match_loc = max_loc
+    result = [match_loc[0], match_loc[1]]
+else:
+    result = []
+result
+            `;
+            const result = await pyodide.runPythonAsync(code);
+            const initialResultDiv = document.getElementById("initialResult");
+
+            if (result.length === 2) {
+                const key = `${result[0]},${result[1]}`;
+                const position = csvData[key] || { initial_position: "？" };
+                const player = position.initial_position === "？" ? "？P" : `${position.initial_position}P`;
+                const number = position.initial_position === "？" ? "" : ` ${position.initial_position}番`;
+                initialResultDiv.textContent = `${player}:(${result[0]},${result[1]})${number}`;
+            } else {
+                initialResultDiv.textContent = "一致する位置が見つかりませんでした。";
+            }
+        }
+    </script>
+</body>
+</html>
