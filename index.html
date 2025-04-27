@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow"> <!-- 検索エンジンインデックス防止 -->
+    <title>画像マッチングアプリ</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js"></script> <!-- Pyodide 最新版 -->
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background-color: #f0f0f0;
+            display: none; /* 初期状態で非表示 */
+        }
+        canvas, img {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ccc;
+        }
+        #result, #initialResult {
+            margin-top: 20px;
+            font-size: 18px;
+            white-space: pre-wrap;
+            text-align: left;
+            display: inline-block;
+        }
+        .result-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .result-row span {
+            margin-right: 10px;
+        }
+        .button-container {
+            margin: 10px 0;
+        }
+        button {
+            padding: 5px 10px;
+            margin: 5px;
+        }
+        input[type="number"] {
+            width: 80px;
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>初期位置検索</h1>
+
+    <div>
+        <label for="imageUpload">画像をアップロード:</label><br>
+        <input type="file" id="imageUpload" accept="image/*" onchange="loadImage(event)">
+    </div>
+
+    <div>
+        <label for="threshold">整合率 (0-1):</label><br>
+        <input type="number" id="threshold" step="0.001" min="0" max="1" value="0.9642">
+    </div>
+
+    <div class="button-container">
+        <button onclick="checkImage()">画像チェック</button>
+        <button onclick="initialPositionCheck()">初期位置チェック</button>
+    </div>
+
+    <!-- 結果表示をキャンバスの上に配置 -->
+    <div id="result">ここに結果が表示されます</div>
+    <div id="initialResult">ここに初期位置が表示されます</div>
+
+    <canvas id="canvas"></canvas>
+
+    <!-- 結果画像を表示（デザインに影響を与えない位置） -->
+    <img id="resultImage" src="" alt="マッチ結果がここに表示されます" style="margin-top: 20px;">
+
+    <script>
+        // 簡易パスワード保護
+        (function() {
+            const correctPassword = "1";
+            const password = prompt("パスワードを入力してください:");
+            console.log("入力されたパスワード: ", password);
+            if (password !== correctPassword || password === null) {
+                console.log("パスワードが間違っています。リダイレクトします。");
+                alert("パスワードが間違っています。");
+                window.location.replace("about:blank");
+                throw new Error("パスワード認証に失敗しました。ページの読み込みを停止します。");
+            } else {
+                console.log("パスワード認証に成功しました。ページを表示します。");
+                document.body.style.display = "block";
+            }
+        })();
+
+        let pyodide = null;
+        let pyodideReady = false;
+        let uploadedImage = null;
+        let coordinates = {};
+        let templateBytes = null;
+        let csvData = {};
+
+        const templateBase64 = "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAwCAIAAACuWtxbAAAACXBIWXMAAAsTAAALEwEAmpwYAAADcElEQVRIiXWUzU4bSxCFz6mqbo89tnPFDcoVERs2WWSVB8hzRHnW7NhEyiuwiUDBJOJHIAIBd1dlMZ6xDdzWaBbT31RXnVNdvFqcpmacmsbu73l5yYsLnJ/Hz584PcVigcWCEXj3Du/f2z/tFMslrq/x6xeOj3FyEicnOD7G9+/x4wfPz2MyoRn29iy+fcNigbOz1fviAtfXcXPtNze4vZWHB87nMZtxZ8fi61ccHeHoCGcLXF7h7g61hrsTAAhAldNpzOdWvnzB1SWuruL2Fn/+oFZEAHCAQASEVFWaWT08DCIIBBBYr+ijkhRRVavooryw2KH9skoiAi/RHTrsWMxmeHzE42O4xzO0+6Jr9PdvlBLuvp1thw4/SPPpU/r4kW/fxmTiqhUoLz0VsNHnz8vDQ7+8LHd3tRSvdVCCgAAACqCAcW8vdnfrdFpyriqVQKxRB0SEk4lMpxa7u7GzU9u25FREfK3pSoGqyra1+dwiIshCVrIQ/kwEJcMMKVksl+FeI7r0n6NGhgjMDIHB9ArUbYfYlU86YORqK3oU27T2ellQwqzmXM0K+SQqAAM6ayxEPefaNCXnIvIcrX0B5hFQjZTcrJLlGVp67cyrg4Sqiw4oN9QdZDGSQTrp5AtliYQqzcTMVLWrvWwosFKKFBGmpDlrziYiATjgvSgbEYVmSIk5S0o2bAyx14qSkjNGI6QUqtZlP+i/iQapqmEWqqAYI7yHniQQvVUBgDAyYrvhn6B10JUM374YT/RfoyCCDLNqVillQ/0hakcbhJKzzWbSttVSgQxzZsi1ow1CmmnbyngcqqWbIIMCZBWppIMGd6hiNIqcXcQ3ZxcZOXM00pRUxOAOEaQEs64NhptIEeTMppGcRdRQVkX7RgUBBKGmHDfatjIahYihOvrtoV1WXaHCptHxmDkHxYLaWbDcsGDzz7WuAfH/cWszJRAWq7m0OnS4HgB0eyzY0PLDib52cnOG0oKMiFprqXXpvnQfLPBAjf7GEgbQI2opyw6NkO6ggMcq++EQakp5NsuTCVWHggKoZKhCFSQCgqCm1MxmuW1VlZtK9YMNJBAGQMysaZjzUuShbxQnTdXNoAqRCBgCFNGckfOjyP3QKKrZbIWSCJh7WNO0r1//e3Cw/+FD++ZNh0KkffXqv/393YODZj53978STunEdILQwwAAAABJRU5ErkJggg==";
+
+        async function loadPyodideAndPackages() {
+            try {
+                pyodide = await loadPyodide();
+                await pyodide.loadPackage(["opencv-python", "numpy"]);
+                pyodideReady = true;
+                console.log("Pyodide is ready");
+                alert("Pyodide が読み込まれました！");
+                templateBytes = Uint8Array.from(atob(templateBase64), c => c.charCodeAt(0));
+                console.log("テンプレート画像（Base64）がデコードされました");
+                alert("テンプレート画像（Base64）がデコードされました");
+            } catch (error) {
+                console.error("Pyodide の読み込みに失敗しました: ", error);
+                alert("Pyodide の読み込みに失敗しました: " + error.message);
+            }
+        }
+
+        async function fetchCSV() {
+            const csvUrl = "https://raw.githubusercontent.com/Gorzmonst/monst25/main/initial-position_database_iphone16.csv";
+            try {
+                const response = await fetch(csvUrl);
+                if (!response.ok) {
+                    throw new Error(`CSVファイルのフェッチに失敗しました: ${response.statusText}`);
+                }
+                const csvText = await response.text();
+                parseCSV(csvText);
+            } catch (error) {
+                console.error("CSVファイルのフェッチに失敗しました: ", error);
+                alert("CSVファイルのフェッチに失敗しました。デフォルトデータを使用します。");
+                // フェッチに失敗した場合のデフォルトデータ（CSVの内容に合わせて更新）
+                csvData = {
+                    '239,1670': { initial_position: '1', string_to_show: 'A-1' },
+                    '239,1672': { initial_position: '2', string_to_show: 'A-2' },
+                    '239,1674': { initial_position: '3', string_to_show: 'A-3' },
+                    '239,1676': { initial_position: '4', string_to_show: 'A-4' },
+                    '239,1678': { initial_position: '5', string_to_show: 'A-5' },
+                    '239,1680': { initial_position: '6', string_to_show: 'A-6' },
+                    '239,1682': { initial_position: '7', string_to_show: 'A-7' },
+                    '239,1684': { initial_position: '8', string_to_show: 'A-8' },
+                    '239,1686': { initial_position: '9', string_to_show: 'A-9' }
+                };
+            }
+        }
+
+        function parseCSV(csvText) {
+            console.log("parseCSV が呼び出されました");
+            csvData = {};
+            const lines = csvText.trim().split('\n');
+            const headers = lines[0].split(',').map(header => header.trim());
+
+            // CSVのヘッダーが期待通りか確認
+            if (headers[0] !== 'x' || headers[1] !== 'y' || headers[2] !== 'initial-position' || headers[3] !== 'named-position' || headers[4] !== 'position') {
+                alert("CSVファイルのヘッダーが正しくありません。期待されるヘッダー: x,y,initial-position,named-position,position");
+                // デフォルトデータにフォールバック
+                csvData = {
+                    '239,1670': { initial_position: '1', string_to_show: 'A-1' },
+                    '239,1672': { initial_position: '2', string_to_show: 'A-2' },
+                    '239,1674': { initial_position: '3', string_to_show: 'A-3' },
+                    '239,1676': { initial_position: '4', string_to_show: 'A-4' },
+                    '239,1678': { initial_position: '5', string_to_show: 'A-5' },
+                    '239,1680': { initial_position: '6', string_to_show: 'A-6' },
+                    '239,1682': { initial_position: '7', string_to_show: 'A-7' },
+                    '239,1684': { initial_position: '8', string_to_show: 'A-8' },
+                    '239,1686': { initial_position: '9', string_to_show: 'A-9' }
+                };
+                return;
+            }
+
+            // 2行目以降を処理
+            for (let i = 1; i < lines.length; i++) {
+                const row = lines[i].split(',').map(item => item.trim());
+                if (row.length < 5) continue; // 不正な行はスキップ
+                const x = parseInt(row[0]);
+                const y = parseInt(row[1]);
+                const initial_position = row[2]; // initial-position
+                const string_to_show = row[3];   // named-position
+                const key = `${x},${y}`;
+                csvData[key] = { initial_position, string_to_show };
+            }
+            console.log("CSVデータがパースされました: ", csvData);
+        }
+
+        // ページ読み込み時にPyodideとCSVをロード
+        window.onload = async function() {
+            console.log("ページが読み込まれました");
+            alert("ページが読み込まれました。");
+            await loadPyodideAndPackages();
+            await fetchCSV(); // CSVをフェッチ
+        };
+
+        function loadImage(event) {
+            console.log("loadImage が呼び出されました");
+            const file = event.target.files[0];
+            if (!file) {
+                console.log("ファイルが選択されていません");
+                alert("ファイルが選択されていません");
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.src = e.target.result;
+                img.onload = function() {
+                    uploadedImage = img;
+                    const canvas = document.getElementById('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    console.log("画像がキャンバスに描画されました");
+                };
+                img.onerror = function() {
+                    console.log("画像の読み込みに失敗しました");
+                    alert("画像の読み込みに失敗しました");
+                };
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function checkImage() {
+            console.log("checkImage が呼び出されました");
+            const resultDiv = document.getElementById('result');
+            resultDiv.textContent = "処理中...";
+
+            if (!pyodideReady) {
+                console.log("Pyodide が準備できていません: ", pyodideReady);
+                resultDiv.textContent = "Pyodide がまだ準備できていません。ページをリロードしてみてください。";
+                alert("Pyodide がまだ準備できていません。ページをリロードしてみてください。");
+                return;
+            }
+            if (!uploadedImage) {
+                console.log("画像がアップロードされていません: ", uploadedImage);
+                resultDiv.textContent = "画像をアップロードしてください。";
+                alert("画像をアップロードしてください。");
+                return;
+            }
+            if (!templateBytes) {
+                console.log("テンプレート画像が読み込まれていません: ", templateBytes);
+                resultDiv.textContent = "テンプレート画像（Base64）が読み込まれていません。ページをリロードしてみてください。";
+                alert("テンプレート画像（Base64）が読み込まれていません。ページをリロードしてみてください。");
+                return;
+            }
+
+            try {
+                const positions = await runMatching(false);
+                console.log("検出された位置: ", positions);
+                displayResults(positions);
+            } catch (error) {
+                console.error("画像チェック中にエラーが発生しました: ", error);
+                resultDiv.textContent = "エラー: " + error.message;
+                alert("画像チェック中にエラーが発生しました: " + error.message + "\nスタック: " + error.stack);
+            }
+        }
+
+        async function initialPositionCheck() {
+            console.log("initialPositionCheck が呼び出されました");
+            const initialResultDiv = document.getElementById('initialResult');
+            if (!pyodideReady) {
+                console.log("pyodideReady: ", pyodideReady);
+                alert("Pyodide がまだ準備できていません。ページをリロードしてみてください。");
+                return;
+            }
+            if (!uploadedImage) {
+                console.log("uploadedImage: ", uploadedImage);
+                alert("画像をアップロードしてください。");
+                return;
+            }
+            if (!templateBytes) {
+                console.log("templateBytes: ", templateBytes);
+                alert("テンプレート画像（Base64）が読み込まれていません。ページをリロードしてみてください。");
+                return;
+            }
+            if (Object.keys(csvData).length === 0) {
+                console.log("CSVデータが読み込まれていません");
+                alert("CSVデータの読み込みに失敗しました。デフォルトデータを使用しています。");
+            }
+
+            try {
+                const positions = await runMatching(true);
+                console.log("検出された位置: ", positions);
+                displayInitialResults(positions);
+            } catch (error) {
+                console.error("初期位置チェック中にエラーが発生しました: ", error);
+                initialResultDiv.textContent = "エラー: " + error.message;
+                alert("初期位置チェック中にエラーが発生しました: " + error.message + "\nスタック: " + error.stack);
+            }
+        }
+
+        async function runMatching(isInitial) {
+            const threshold = parseFloat(document.getElementById("threshold").value);
+            const imageInput = document.getElementById("imageUpload");
+            const imgEl = document.getElementById("resultImage");
+            const resultDiv = document.getElementById('result');
+
+            if (imageInput.files.length === 0) {
+                throw new Error("対象画像を選択してください。");
+            }
+
+            if (isNaN(threshold) || threshold < 0 || threshold > 1) {
+                throw new Error("閾値は0～1の範囲で入力してください。");
+            }
+
+            const imageFile = imageInput.files[0];
+            const imageExt = imageFile.name.split('.').pop().toLowerCase();
+            const imageName = "uploaded." + imageExt;
+
+            const imageBytes = new Uint8Array(await imageFile.arrayBuffer());
+            pyodide.FS.writeFile('template.png', templateBytes);
+            pyodide.FS.writeFile(imageName, imageBytes);
+
+            const pythonCode = `
+import cv2
+import numpy as np
+import base64
+import json
+
+log = []
+try:
+    log.append("🔹 template 読み込み中...")
+    template = cv2.imread("template.png", 0)
+    if template is None:
+        raise Exception("テンプレート画像の読み込みに失敗")
+
+    log.append("🔹 対象画像 読み込み中...")
+    img_color = cv2.imread("${imageName}")
+    img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+
+    log.append("🔹 テンプレートマッチング実行中...")
+    res = cv2.matchTemplate(img_gray, template, cv2.TM_CCOEFF_NORMED)
+    log.append("🔹 閾値 ${threshold} 以上を抽出中...")
+    loc = np.where(res >= ${threshold})
+    result = list(zip(*loc[::-1]))
+
+    min_distance = 10
+    final_result = []
+    for pt in result:
+        add = True
+        for other_pt in final_result:
+            dist = np.linalg.norm(np.array(pt) - np.array(other_pt))
+            if dist < min_distance:
+                add = False
+                break
+        if add:
+            final_result.append(pt)
+
+    final_result_sorted = sorted(final_result, key=lambda x: x[0])
+
+    h, w = template.shape
+    log.append(f"テンプレート画像のサイズ: 幅={w}, 高さ={h}")
+
+    # 中心座標に変換（y座標に+1補正を追加）
+    final_result_centered = [(round(pt[0] + w / 2.0), round(pt[1] + h / 2.0 + 1.0)) for pt in final_result_sorted]
+
+    if final_result_sorted:
+        log.append("✅ マッチ箇所が見つかりました（中心座標）:")
+        if len(final_result_sorted) > 5:
+            log.append("⚠️ マッチ箇所が多すぎます。閾値を調整するか、範囲を狭めてください。")
+        for pt in final_result_centered:
+            log.append(f"X: {pt[0]}, Y: {pt[1]}")
+            pt_left_top = (int(pt[0] - w / 2.0), int(pt[1] - h / 2.0))
+            pt_right_bottom = (int(pt[0] + w / 2.0), int(pt[1] + h / 2.0))
+            cv2.rectangle(img_color, pt_left_top, pt_right_bottom, (0, 0, 255), 2)
+            cv2.circle(img_color, (pt[0], pt[1]), 10, (0, 255, 0), 2)
+    else:
+        log.append("⚠️ マッチなし")
+
+    cv2.imwrite("result.png", img_color)
+
+    with open("result.png", "rb") as f:
+        img_bytes = f.read()
+    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+except Exception as e:
+    log.append("❌ エラー: " + str(e))
+    img_base64 = ""
+    final_result_centered = []
+
+positions_json = json.dumps(final_result_centered)
+
+"\\n".join(log) + "\\n__SPLIT__\\n" + img_base64 + "\\n__SPLIT__\\n" + positions_json
+`;
+
+            try {
+                const result = await pyodide.runPythonAsync(pythonCode);
+                const [logText, imgBase64, positionsStr] = result.split("__SPLIT__");
+                console.log("Pyodide ログ: ", logText);
+                resultDiv.textContent = logText;
+
+                if (imgBase64) {
+                    imgEl.src = "data:image/png;base64," + imgBase64;
+                    console.log("結果画像が設定されました");
+                } else {
+                    imgEl.src = "";
+                    console.log("結果画像がありません");
+                }
+
+                console.log("パース前の positionsStr: ", positionsStr);
+                let positions;
+                try {
+                    positions = JSON.parse(positionsStr);
+                } catch (parseError) {
+                    console.error("JSON パースエラー: ", parseError);
+                    throw new Error("JSON パースエラー: " + parseError.message + "\npositionsStr: " + positionsStr);
+                }
+                console.log("パースされた位置: ", positions);
+                return positions;
+            } catch (err) {
+                console.error("Pyodide 実行エラー: ", err);
+                resultDiv.textContent = "Pyodide 実行エラー: " + err.message;
+                throw err;
+            }
+        }
+
+        function displayResults(positions) {
+            console.log("displayResults が呼び出されました: ", positions);
+            const resultDiv = document.getElementById('result');
+            coordinates = {};
+            if (positions && positions.length > 0) {
+                resultDiv.innerHTML = ''; // 既存の内容をクリア
+                positions.forEach((pos, i) => {
+                    const rowDiv = document.createElement('div');
+                    rowDiv.className = 'result-row';
+                    const label = `${i + 1}p : (${pos[0]}, ${pos[1]})`;
+                    const labelSpan = document.createElement('span');
+                    labelSpan.textContent = label;
+                    const copyButton = document.createElement('button');
+                    copyButton.textContent = 'コピー';
+                    copyButton.onclick = () => copyCoordinate(pos[0], pos[1]);
+                    rowDiv.appendChild(labelSpan);
+                    rowDiv.appendChild(copyButton);
+                    resultDiv.appendChild(rowDiv);
+                    coordinates[`${i + 1}P`] = pos;
+                });
+                console.log("結果が表示されました: ", positions);
+            } else {
+                resultDiv.textContent = "キャラクターが見つかりませんでした。";
+                console.log("マッチする位置が見つかりませんでした");
+                alert("キャラクターが見つかりませんでした。\nテンプレート画像がアップロードした画像内に存在するか確認してください。");
+            }
+        }
+
+        function copyCoordinate(x, y) {
+            const textToCopy = `${x}, ${y}`;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                alert(`座標 (${textToCopy}) がクリップボードにコピーされました！`);
+            }).catch(err => {
+                console.error("クリップボードへのコピーに失敗しました: ", err);
+                alert("クリップボードへのコピーに失敗しました: " + err.message);
+            });
+        }
+
+        function displayInitialResults(positions) {
+            console.log("displayInitialResults が呼び出されました: ", positions);
+            const initialResultDiv = document.getElementById('initialResult');
+            if (positions.length > 0) {
+                const resultText = positions.map((pos, i) => {
+                    const key = `${pos[0]},${pos[1]}`;
+                    const data = csvData[key] || { initial_position: '', string_to_show: '不明' };
+                    return `${i + 1}p : ${data.initial_position} ${data.string_to_show}`;
+                }).join('\n');
+                initialResultDiv.textContent = resultText;
+            } else {
+                initialResultDiv.textContent = "キャラクターが見つかりませんでした。";
+                alert("キャラクターが見つかりませんでした。\nテンプレート画像がアップロードした画像内に存在するか確認してください。");
+            }
+        }
+    </script>
+</body>
+</html>
